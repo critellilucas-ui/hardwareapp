@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hardware Cloud - apphardware</title>
+    
+    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <style>
+        :root { --primary: #1a2a3a; --secondary: #2c3e50; --accent: #3498db; --success: #27ae60; --danger: #e74c3c; --warning: #f39c12; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        #login-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--primary); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .login-box { background: white; padding: 40px; border-radius: 8px; text-align: center; width: 320px; }
+        .hidden { display: none !important; }
+        .flex { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+        th { background: var(--secondary); color: white; }
+        button { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; transition: 0.2s; }
+        input, select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .stock-low { background-color: #fff1f0; color: var(--danger); font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="login-screen">
+    <div class="login-box">
+        <h2 style="color: var(--primary)">apphardware Cloud</h2>
+        <input type="text" id="user" placeholder="Usuario" style="width: 80%"><br>
+        <input type="password" id="pass" placeholder="Contraseña" style="width: 80%"><br><br>
+        <button style="background: var(--accent); width: 85%;" onclick="login()">Iniciar Sesión</button>
+        <p style="font-size: 11px; color: #888; margin-top: 15px;">Admin: admin / 1234</p>
+    </div>
+</div>
+
+<div id="app" class="container hidden">
+    <header class="card flex" style="justify-content: space-between;">
+        <h1 style="margin:0;">Hardware Pro <small style="font-size: 12px; color: var(--accent);" id="user-info"></small></h1>
+        <button style="background: #7f8c8d" onclick="location.reload()">Cerrar Sesión</button>
+    </header>
+
+    <div class="card admin-only hidden">
+        <h3 style="margin-top:0">Carga Masiva (Sincronización Inteligente)</h3>
+        <div class="flex" style="background: #f0f4f8; padding: 15px; border-radius: 8px;">
+            <input type="file" id="fileInput" accept=".xlsx, .xls, .csv">
+            <button style="background: var(--warning);" onclick="importarConControl()">Validar y Subir a Firestore</button>
+        </div>
+    </div>
+
+    <div class="card flex">
+        <div style="background: #e6f7ff; padding: 10px; border-radius: 6px; border: 1px solid #91d5ff;">
+            <strong>Cotización USD: $</strong>
+            <input type="number" id="tipoCambio" value="1000" onchange="renderizarTabla()" style="width: 90px;">
+        </div>
+        
+        <div style="flex-grow: 1; text-align: right;" class="admin-only hidden">
+            <input type="text" id="nombre" placeholder="Nuevo Producto">
+            <input type="number" id="costo" placeholder="Costo USD" style="width: 90px;">
+            <input type="number" id="margen" value="20" style="width: 60px;">
+            <input type="number" id="cantidad" placeholder="Stock" style="width: 70px;">
+            <button style="background: var(--success);" onclick="agregarProducto()">+ Agregar</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <table id="main-table">
+            <thead>
+                <tr>
+                    <th>Categoría</th>
+                    <th>Producto</th>
+                    <th>Stock</th>
+                    <th class="vendedor-plus">Costo (USD)</th>
+                    <th class="vendedor-plus">Margen %</th>
+                    <th>Precio Venta (Local)</th>
+                    <th class="admin-only hidden">Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="lista-productos"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    // CONFIGURACIÓN DE FIREBASE INTEGRADA
+    const firebaseConfig = {
+        apiKey: "AIzaSyAWy91tLRNUofae-1aZq8z--ORq-qarCZM",
+        authDomain: "apphardware.firebaseapp.com",
+        projectId: "apphardware",
+        storageBucket: "apphardware.firebasestorage.app",
+        messagingSenderId: "172680877326",
+        appId: "1:172680877326:web:8794f6544d841b01a0b35f",
+        measurementId: "G-SJ62B50STS"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    
+    let inventario = [];
+    let currentUser = null;
+
+    function login() {
+        const u = document.getElementById('user').value;
+        const p = document.getElementById('pass').value;
+        
+        if (u === 'admin' && p === '1234') {
+            currentUser = { user: 'admin', role: 'admin' };
+            iniciarApp();
+        } else if (u === 'vendedor' && p === 'vendedor') {
+            currentUser = { user: 'vendedor', role: 'vendedor' };
+            iniciarApp();
+        } else {
+            alert("Acceso denegado");
+        }
+    }
+
+    function iniciarApp() {
+        document.getElementById('login-screen').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        document.getElementById('user-info').innerText = `| ${currentUser.role.toUpperCase()}`;
+        
+        if (currentUser.role === 'admin') {
+            document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
+        }
+        
+        // Escuchar base de datos en tiempo real
+        db.collection("productos").orderBy("nombre").onSnapshot((snapshot) => {
+            inventario = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            renderizarTabla();
+        });
+    }
+
+    function renderizarTabla() {
+        const tbody = document.getElementById('lista-productos');
+        const tc = parseFloat(document.getElementById('tipoCambio').value) || 1;
+        tbody.innerHTML = '';
+
+        inventario.forEach(p => {
+            const precioVenta = (p.costo * (1 + p.margen / 100)) * tc;
+            const row = document.createElement('tr');
+            if (p.cantidad <= 2) row.classList.add('stock-low');
+
+            row.innerHTML = `
+                <td>${p.categoria || 'Gral'}</td>
+                <td>${p.nombre}</td>
+                <td>${p.cantidad} ${p.cantidad <= 2 ? '⚠️' : ''}</td>
+                <td>$${p.costo.toFixed(2)}</td>
+                <td>${p.margen}% ${currentUser.role === 'admin' ? `<button style="background:var(--warning); font-size:10px; padding:2px 5px;" onclick="editarMargen('${p.id}', ${p.margen})">Modificar</button>` : ''}</td>
+                <td><strong>$${precioVenta.toLocaleString('es-AR', {minimumFractionDigits: 2})}</strong></td>
+                <td class="admin-only"><button style="background:var(--danger); padding:4px 8px;" onclick="eliminar('${p.id}')">Eliminar</button></td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    async function agregarProducto() {
+        const nombre = document.getElementById('nombre').value;
+        const costo = parseFloat(document.getElementById('costo').value);
+        const margen = parseFloat(document.getElementById('margen').value);
+        const stock = parseInt(document.getElementById('cantidad').value) || 0;
+
+        if (!nombre || isNaN(costo)) return alert("Nombre y Costo son obligatorios");
+
+        await db.collection("productos").add({
+            nombre, costo, margen, cantidad: stock, categoria: 'Manual'
+        });
+
+        document.getElementById('nombre').value = '';
+        document.getElementById('costo').value = '';
+        document.getElementById('cantidad').value = '';
+    }
+
+    async function editarMargen(id, actual) {
+        const nuevo = prompt("Nuevo margen %:", actual);
+        if (nuevo !== null && !isNaN(nuevo)) {
+            await db.collection("productos").doc(id).update({ margen: parseFloat(nuevo) });
+        }
+    }
+
+    async function eliminar(id) {
+        if (confirm("¿Seguro que quieres borrar este producto de la nube?")) {
+            await db.collection("productos").doc(id).delete();
+        }
+    }
+
+    async function importarConControl() {
+        const fileInput = document.getElementById('fileInput');
+        if (!fileInput.files[0]) return alert("Elige un archivo.");
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+            for (let row of rows) {
+                const nombreE = (row.Producto || row.nombre || "").trim();
+                if(!nombreE) continue;
+
+                const existente = inventario.find(p => p.nombre.toLowerCase() === nombreE.toLowerCase());
+                const datos = {
+                    nombre: nombreE,
+                    costo: parseFloat(row.Costo) || 0,
+                    margen: parseFloat(row.Margen) || 20,
+                    cantidad: parseInt(row.Stock) || 0,
+                    categoria: row.Categoria || "Hardware"
+                };
+
+                if (existente) {
+                    if (confirm(`El producto "${nombreE}" ya existe. ¿Deseas actualizar sus datos?`)) {
+                        await db.collection("productos").doc(existente.id).update(datos);
+                    }
+                } else {
+                    await db.collection("productos").add(datos);
+                }
+            }
+            alert("Sincronización terminada con éxito.");
+            fileInput.value = '';
+        };
+        reader.readAsArrayBuffer(fileInput.files[0]);
+    }
+</script>
+</body>
+</html>
